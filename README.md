@@ -4,7 +4,7 @@
 
 ## شروع کار در ویندوز ۱۱
 
-۱. بستهٔ `ShahtootFinance-Windows-x64.zip` را کامل استخراج کنید و پوشهٔ `ShahtootFinance` را در مسیر ثابتی نگه دارید. برای اجرا روی `ShahtootFinance.exe` دوبار کلیک کنید. بستهٔ ساخته‌شده شامل Python و وابستگی‌هاست.
+۱. فایل `ShahtootFinance.exe` را در مسیر ثابتی روی ویندوز نگه دارید و برای اجرا روی آن دوبار کلیک کنید. فایل اجرایی شامل Python و وابستگی‌هاست.
 
 ۲. از «ثبت وام»، بانک، عنوان، اصل وام به تومان، تاریخ دریافت، سررسید نخستین قسط، تعداد و مبلغ اقساط را وارد کنید. برای وام، شمارهٔ قرارداد، یادداشت و زمان شروع یادآوری هم قابل ثبت‌اند. برنامه اقساط ماهانهٔ شمسی را تولید می‌کند. اگر یک ماه روز انتخابی را نداشته باشد، آخرین روز همان ماه استفاده می‌شود.
 
@@ -49,7 +49,9 @@ py -3.11 -m venv .venv
 powershell -ExecutionPolicy Bypass -File .\packaging\build-windows.ps1 -Python .\.venv\Scripts\python.exe
 ```
 
-فایل ZIP در `dist/ShahtootFinance-Windows-x64.zip` ساخته می‌شود. این اسکریپت اجرای اولیهٔ فایل بسته‌بندی‌شده را هم آزمایش می‌کند. گردش‌کار `Windows x64 build` در GitHub Actions می‌تواند همین بسته را از روی مخزن GitHub بسازد. ساخت خروجی Windows با PyInstaller روی محیط Windows انجام می‌شود. [مستندات PyInstaller](https://pyinstaller.org/en/stable/)
+فایل `dist/ShahtootFinance.exe` ساخته می‌شود. اسکریپت اجرای اولیهٔ فایل را هم آزمایش می‌کند.
+
+اگر فقط به مک دسترسی دارید، این مخزن را به یک مخزن خصوصی در GitHub بفرستید. ساخت روی شاخهٔ `main` به‌صورت خودکار شروع می‌شود. می‌توانید از بخش **Actions** هم گردش‌کار **Windows x64 build** را دستی اجرا کنید. بعد از موفقیت، در بخش **Artifacts** همان اجرا، `ShahtootFinance-Windows-x64` را دانلود و فایل `ShahtootFinance.exe` را از آن استخراج کنید. ساخت روی محیط ویندوز GitHub انجام می‌شود. [مستندات PyInstaller](https://pyinstaller.org/en/stable/) · [دانلود خروجی GitHub Actions](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/download-workflow-artifacts)
 
 برای تحویل به حسابداری، روی ویندوز ۱۱ یک چک آزمایشی با تاریخ امروز ثبت کنید، بستن پنجره و باز کردن مجدد از کنار ساعت را بررسی کنید و پس از ورود مجدد به ویندوز، اجرای خودکار و اعلان را تأیید کنید.
 

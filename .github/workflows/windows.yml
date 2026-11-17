@@ -36,6 +36,6 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: ShahtootFinance-Windows-x64
-          path: dist/ShahtootFinance-Windows-x64.zip
+          path: dist/ShahtootFinance.exe
           if-no-files-found: error
           compression-level: 0
