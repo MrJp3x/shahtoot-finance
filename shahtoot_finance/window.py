@@ -13,6 +13,7 @@ from . import APP_NAME
 from .dialogs import EntryDetail, EntryForm, LoanDetail, LoanForm, confirm_delete_loan, lead_label, run_action
 from .localization import fa, long_date, money, normalized, short_date
 from .platform_services import set_startup, startup_enabled
+from .report import DueReport
 from .storage import (
     CHECK, DIRECTION_NAMES, INCOMING, INSTALLMENT, KIND_NAMES, Entry, Loan, Store,
     is_due, status, status_label,
@@ -25,6 +26,7 @@ PAGES = {
     "loans": ("وام‌ها", "loan"),
     "checks": ("چک‌ها", "check"),
     "due": ("سررسیدها", "calendar"),
+    "report": ("گزارش سررسید", "report"),
     "settings": ("تنظیمات", "settings"),
 }
 
@@ -66,6 +68,7 @@ class MainWindow(QMainWindow):
         self.page = "home"
         self.today = date.today()
         self.default_days = store.reminder_days()
+        self.report: DueReport | None = None
         self.setWindowTitle(APP_NAME)
         self.setMinimumSize(790, 510)
         self.resize(1170, 790)
@@ -180,10 +183,18 @@ class MainWindow(QMainWindow):
             item = self.body.takeAt(0)
             if item.widget() is not None:
                 item.widget().hide()
-                item.widget().deleteLater()
+                if item.widget() is not self.report:
+                    item.widget().deleteLater()
 
         if self.page == "settings":
             self.settings_page()
+        elif self.page == "report":
+            if self.report is None:
+                self.report = DueReport(self.store, self.today)
+                self.report.entry_requested.connect(self.open_entry)
+            self.report.refresh(self.today)
+            self.body.addWidget(self.report)
+            self.report.show()
         else:
             self.ledger_page()
         self.body.addStretch()

@@ -2,17 +2,19 @@ from __future__ import annotations
 
 from datetime import date
 import logging
+from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QDialog, QFormLayout, QHBoxLayout, QHeaderView,
+    QAbstractItemView, QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView,
     QMessageBox, QPlainTextEdit, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from .localization import fa, money, parse_money, short_date
+from .receipts import read_receipt, show_receipt
 from .storage import (
     CHECK, DIRECTION_NAMES, INCOMING, INSTALLMENT, KIND_NAMES, MAX_INSTALLMENTS,
-    OUTGOING, Entry, EntryDetails, Loan, LoanDetails, Store, lead_time, status_label,
+    OUTGOING, Entry, EntryDetails, Loan, LoanDetails, PaymentEvidence, Store, lead_time, status_label,
 )
 from .widgets import (
     FA_LOCALE, RIGHT, AmountField, DateField, LeadField, button, confirm, field, label,
@@ -187,13 +189,63 @@ class EntryForm(FormDialog):
 class SettleForm(FormDialog):
     def __init__(self, parent, store, entry):
         title = "ثبت وصول چک" if entry.direction == INCOMING else "ثبت پرداخت"
-        super().__init__(parent, title, width=403, height=204)
+        if entry.settled_on is not None:
+            title = "ویرایش تسویه"
+        super().__init__(parent, title, width=530, height=340)
         self.store, self.entry = store, entry
-        self.day = DateField(date.today(), maximum=date.today())
+        evidence = store.payment_evidence(entry.id)
+        self.day = DateField(entry.settled_on or date.today(), maximum=date.today())
+        self.tracking = field(evidence.tracking_number, "اختیاری", limit=80)
+        self.image = evidence.image
         self.row("تاریخ تسویه", self.day)
+        self.row("شمارهٔ پیگیری", self.tracking)
+
+        receipt = QWidget()
+        layout = QVBoxLayout(receipt)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.receipt_caption = label("", "small", wrap=True)
+        layout.addWidget(self.receipt_caption)
+        actions = QHBoxLayout()
+        choose = button("انتخاب تصویر")
+        choose.clicked.connect(self.choose_receipt)
+        actions.addWidget(choose)
+        self.preview_button = button("مشاهده")
+        self.preview_button.clicked.connect(self.preview_receipt)
+        actions.addWidget(self.preview_button)
+        self.remove_button = button("برداشتن", "danger")
+        self.remove_button.clicked.connect(self.remove_receipt)
+        actions.addWidget(self.remove_button)
+        actions.addStretch()
+        layout.addLayout(actions)
+        self.row("تصویر رسید", receipt)
+        self.update_receipt_controls()
+
+    def update_receipt_controls(self, name=""):
+        attached = self.image is not None
+        self.receipt_caption.setText(name or ("تصویر رسید پیوست شده" if attached else "اختیاری · PNG یا JPEG تا ۱۰ مگابایت"))
+        self.preview_button.setVisible(attached)
+        self.remove_button.setVisible(attached)
+
+    def choose_receipt(self):
+        selected, _ = QFileDialog.getOpenFileName(self, "انتخاب تصویر رسید", filter="تصاویر (*.png *.jpg *.jpeg)")
+        if selected:
+            def attach():
+                path = Path(selected)
+                self.image = read_receipt(path)
+                self.update_receipt_controls(path.name)
+
+            run_action(self, attach)
+
+    def preview_receipt(self):
+        if self.image is not None:
+            run_action(self, lambda: show_receipt(self, self.image))
+
+    def remove_receipt(self):
+        self.image = None
+        self.update_receipt_controls()
 
     def persist(self):
-        self.store.settle(self.entry.id, self.day.value())
+        self.store.settle(self.entry.id, self.day.value(), evidence=PaymentEvidence(self.tracking.text(), self.image))
 
 
 class EntryDetail(QDialog):
@@ -211,6 +263,7 @@ class EntryDetail(QDialog):
         while self.body.count():
             self.body.takeAt(0).widget().deleteLater()
         entry = self.store.get(self.entry_id)
+        evidence = self.store.payment_evidence(entry.id) if entry.settled_on else PaymentEvidence()
         title = KIND_NAMES[entry.kind]
         if entry.installment_number is not None:
             title = f"قسط {fa(entry.installment_number)} از {fa(entry.installment_total)}"
@@ -226,6 +279,7 @@ class EntryDetail(QDialog):
             ("مبلغ", f"{money(entry.amount)} تومان"),
             ("سررسید", short_date(entry.due_on)),
             ("تاریخ تسویه", short_date(entry.settled_on) if entry.settled_on else ""),
+            ("شمارهٔ پیگیری", f"\u2066{evidence.tracking_number}\u2069" if evidence.tracking_number else ""),
             ("نوع چک", DIRECTION_NAMES[entry.direction] if entry.kind == CHECK else ""),
             ("طرف حساب", entry.party if entry.loan_id is None else ""),
             ("بانک", entry.bank),
@@ -235,7 +289,14 @@ class EntryDetail(QDialog):
         )
         for caption, value in fields:
             if value:
-                layout.addWidget(label(f"{caption}  •  {value}", wrap=True))
+                line = label(f"{caption}  •  {value}", wrap=True)
+                if caption == "شمارهٔ پیگیری":
+                    line.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+                layout.addWidget(line)
+        if evidence.image is not None:
+            view = button("مشاهدهٔ تصویر رسید")
+            view.clicked.connect(lambda: run_action(self, lambda: show_receipt(self, evidence.image)))
+            layout.addWidget(view)
         content.addWidget(summary)
         content.addStretch()
         scroller.setMinimumHeight(185)
@@ -250,6 +311,10 @@ class EntryDetail(QDialog):
             delete = button("حذف", "danger")
             delete.clicked.connect(self.delete)
             actions.addWidget(delete)
+        if entry.settled_on:
+            update = button("ویرایش تسویه")
+            update.clicked.connect(lambda: self.edit_settlement(entry))
+            actions.addWidget(update)
         actions.addStretch()
         paid = button(
             "بازگرداندن تسویه" if entry.settled_on else
@@ -268,12 +333,21 @@ class EntryDetail(QDialog):
     def toggle_paid(self):
         entry = self.store.get(self.entry_id)
         if entry.settled_on:
-            if not confirm(self, "بازگرداندن تسویه", "این مورد دوباره باز می‌شود و در سررسیدها دیده خواهد شد."):
+            if not confirm(
+                self, "بازگرداندن تسویه",
+                "این سند دوباره باز می‌شود و شمارهٔ پیگیری و تصویر رسیدِ ثبت‌شده برای این تسویه پاک می‌شوند.",
+            ):
                 return
             changed = run_action(self, lambda: self.store.settle(entry.id, None))
         else:
-            changed = SettleForm(self, self.store, entry).exec()
+            self.edit_settlement(entry)
+            return
         if changed:
+            self.changed = True
+            self.rebuild()
+
+    def edit_settlement(self, entry):
+        if SettleForm(self, self.store, entry).exec():
             self.changed = True
             self.rebuild()
 

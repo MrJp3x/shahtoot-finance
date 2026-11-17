@@ -9,12 +9,14 @@ import sys
 from tempfile import TemporaryDirectory
 
 from PySide6.QtCore import QObject, QStandardPaths, Qt, QTimer
+from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
 from . import APP_ID, APP_NAME, VERSION
 from .localization import fa, short_date
 from .platform_services import IS_WINDOWS, SingleInstance, set_startup, startup_enabled
-from .storage import CHECK, KIND_NAMES, OUTGOING, EntryDetails, LoanDetails, Store
+from .receipts import read_receipt
+from .storage import CHECK, KIND_NAMES, OUTGOING, EntryDetails, LoanDetails, PaymentEvidence, Store
 from .theme import apply_theme, brand_icon
 from .window import MainWindow
 
@@ -142,14 +144,23 @@ def smoke_test(app: QApplication) -> int:
         try:
             today = date.today()
             store.create_loan(LoanDetails("وام آزمایشی", "بانک نمونه", 100_000, today), today, 2, 50_000)
-            store.create(EntryDetails(CHECK, OUTGOING, "چک آزمایشی", "فروشنده", 10_000, today))
+            check = store.create(EntryDetails(CHECK, OUTGOING, "چک آزمایشی", "فروشنده", 10_000, today))[0]
             now = datetime.now().astimezone()
             if len(store.collect_reminders(now)) != 2 or store.collect_reminders(now):
                 raise RuntimeError("Smoke test did not produce one reminder per due entry in the interval")
+            sample = QImage(4, 4, QImage.Format.Format_RGB32)
+            sample.fill(Qt.GlobalColor.white)
+            receipt = Path(folder) / "receipt.jpg"
+            if not sample.save(str(receipt)):
+                raise RuntimeError("JPEG receipt support is missing from the app")
+            evidence = PaymentEvidence("001234", read_receipt(receipt))
+            store.settle(check.id, today, evidence=evidence)
+            if store.payment_evidence(check.id) != evidence:
+                raise RuntimeError("Receipt data could not be read back")
             window = MainWindow(store, background_available=False)
             window.show()
             app.processEvents()
-            for page in ("loans", "checks", "due", "settings"):
+            for page in ("loans", "checks", "due", "report", "settings"):
                 window.go(page)
                 app.processEvents()
             window.close()

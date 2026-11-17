@@ -170,6 +170,11 @@ def symbol(name: str, color=MUTED, size=18) -> QIcon:
             painter.drawLine(4, y, x - 2, y)
             painter.drawLine(x + 2, y, 20, y)
             painter.drawEllipse(x - 2, y - 2, 4, 4)
+    elif name == "report":
+        painter.drawLine(4, 20, 20, 20)
+        painter.drawLine(7, 16, 7, 11)
+        painter.drawLine(12, 16, 12, 5)
+        painter.drawLine(17, 16, 17, 8)
     elif name == "plus":
         painter.drawLine(5, 12, 19, 12)
         painter.drawLine(12, 5, 12, 19)

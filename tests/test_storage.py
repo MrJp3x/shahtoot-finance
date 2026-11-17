@@ -6,8 +6,9 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from shahtoot_finance.localization import monthly_dates, parse_date, short_date
+from shahtoot_finance.report import Totals, totals_for, week_start
 from shahtoot_finance.storage import (
-    CHECK, OUTGOING, EntryDetails, LoanDetails, Store, is_due, lead_time,
+    CHECK, INCOMING, OUTGOING, EntryDetails, LoanDetails, PaymentEvidence, Store, is_due, lead_time,
 )
 
 
@@ -129,6 +130,54 @@ class StoreTest(unittest.TestCase):
         self.assertIn("مبلغ (تومان)", header)
         self.assertEqual(check[3], "'=1+2")
         self.assertEqual(check[5], "2000000")
+
+    def test_report_filters_open_entries_including_both_ends_and_totals_by_direction(self):
+        start = self.first_due
+        end = start + timedelta(days=29)
+        self.store.create_loan(self.loan, start, 1, 10_000_000)
+        self.store.create(replace(self.check(due=end), bank=self.loan.bank))
+        self.store.create(replace(self.check(due=end), direction=INCOMING))
+        self.store.create(self.check(due=start - timedelta(days=1)))
+        self.store.create(self.check(due=end + timedelta(days=1)))
+        paid = self.store.create(self.check(due=start))[0]
+        self.store.settle(paid.id, date.today())
+
+        entries = self.store.report_entries(start, end)
+        self.assertEqual([entry.due_on for entry in entries], [start, end, end])
+        self.assertEqual(totals_for(entries), Totals(10_000_000, 2_000_000, 2_000_000))
+        self.assertEqual(totals_for(entries).outgoing, 12_000_000)
+        self.assertEqual(len(self.store.report_entries(start, end, self.loan.bank)), 2)
+        self.assertEqual(len(self.store.report_entries(start, end, "")), 1)
+        self.assertEqual(self.store.report_banks(), ["", self.loan.bank])
+        self.assertEqual(week_start(date(2026, 11, 20)), date(2026, 11, 14))
+        self.assertEqual(week_start(date(2026, 11, 21)), date(2026, 11, 21))
+        with self.assertRaises(ValueError):
+            self.store.report_entries(end, start)
+
+    def test_payment_evidence_upgrade_edit_backup_and_reversal(self):
+        entry = self.store.create(self.check())[0]
+        self.store.settle(entry.id, date.today())
+        with self.store.engine.begin() as connection:
+            connection.exec_driver_sql("DROP TABLE settlement_proofs")
+        reopened = Store(self.path)
+        self.addCleanup(reopened.engine.dispose)
+        self.assertEqual(reopened.get(entry.id).settled_on, date.today())
+        self.assertEqual(reopened.payment_evidence(entry.id), PaymentEvidence())
+
+        evidence = PaymentEvidence("001234567", b"receipt image bytes")
+        reopened.settle(entry.id, date.today(), evidence=evidence)
+        reopened.settle(entry.id, date.today())
+        self.assertEqual(reopened.payment_evidence(entry.id), evidence)
+        backup_path = self.path.with_name("with-receipts.sqlite3")
+        reopened.backup(backup_path)
+        backup = Store(backup_path)
+        self.addCleanup(backup.engine.dispose)
+        self.assertEqual(backup.payment_evidence(entry.id), evidence)
+        reopened.settle(entry.id, date.today(), evidence=PaymentEvidence("0059"))
+        self.assertEqual(reopened.payment_evidence(entry.id), PaymentEvidence("0059"))
+        reopened.settle(entry.id, None)
+        self.assertIsNone(reopened.get(entry.id).settled_on)
+        self.assertEqual(reopened.payment_evidence(entry.id), PaymentEvidence())
 
 
 if __name__ == "__main__":

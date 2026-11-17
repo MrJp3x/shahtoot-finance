@@ -8,7 +8,7 @@ import sqlite3
 import tempfile
 
 from sqlalchemy import (
-    CheckConstraint, Date, ForeignKey, Index, Integer, String, Text,
+    CheckConstraint, Date, ForeignKey, Index, Integer, LargeBinary, String, Text,
     URL, create_engine, event, inspect, select,
 )
 from sqlalchemy.dialects.sqlite import insert
@@ -24,6 +24,7 @@ DEFAULT_LEAD_DAYS = 7
 MAX_LEAD_DAYS = 365
 MAX_INSTALLMENTS = 120
 REMINDER_INTERVAL_SECONDS = 3 * 60 * 60
+MAX_RECEIPT_BYTES = 10 * 1024 * 1024
 DIRECTION_NAMES = {OUTGOING: "پرداختی", INCOMING: "دریافتی"}
 KIND_NAMES = {CHECK: "چک", INSTALLMENT: "قسط"}
 
@@ -92,6 +93,14 @@ class ReminderDelivery(Base):
     notified_at: Mapped[int] = mapped_column(Integer)
 
 
+class SettlementProof(Base):
+    __tablename__ = "settlement_proofs"
+
+    entry_id: Mapped[int] = mapped_column(ForeignKey("entries.id", ondelete="CASCADE"), primary_key=True)
+    tracking_number: Mapped[str] = mapped_column(String(80))
+    image: Mapped[bytes | None] = mapped_column(LargeBinary)
+
+
 class Setting(Base):
     __tablename__ = "settings"
 
@@ -122,6 +131,12 @@ class LoanDetails:
     reference: str = ""
     lead_days: int | None = None
     notes: str = ""
+
+
+@dataclass(frozen=True)
+class PaymentEvidence:
+    tracking_number: str = ""
+    image: bytes | None = None
 
 
 def lead_time(entry: Entry, default: int) -> int:
@@ -182,6 +197,19 @@ class Store:
     def entries(self) -> list[Entry]:
         with self.session() as db:
             return list(db.scalars(select(Entry).order_by(Entry.due_on, Entry.id)))
+
+    def report_banks(self) -> list[str]:
+        with self.session() as db:
+            return list(db.scalars(select(Entry.bank).distinct().order_by(Entry.bank)))
+
+    def report_entries(self, start: date, end: date, bank: str | None = None) -> list[Entry]:
+        if end < start:
+            raise ValueError("تاریخ پایان گزارش باید در تاریخ شروع یا پس از آن باشد.")
+        query = select(Entry).where(Entry.settled_on.is_(None), Entry.due_on.between(start, end))
+        if bank is not None:
+            query = query.where(Entry.bank == bank)
+        with self.session() as db:
+            return list(db.scalars(query.order_by(Entry.due_on, Entry.id)))
 
     def get(self, entry_id: int) -> Entry:
         with self.session() as db:
@@ -309,11 +337,29 @@ class Store:
                 raise ValueError("برای تغییر جهت سند تسویه‌شده، ابتدا تسویه را برگردانید.")
             self._apply(entry, details)
 
-    def settle(self, entry_id: int, day: date | None):
+    def payment_evidence(self, entry_id: int) -> PaymentEvidence:
+        with self.session() as db:
+            proof = db.get(SettlementProof, entry_id)
+            return PaymentEvidence(proof.tracking_number, proof.image) if proof else PaymentEvidence()
+
+    def settle(self, entry_id: int, day: date | None, *, evidence: PaymentEvidence | None = None):
         if day is not None and not DATE_MIN <= day <= min(date.today(), DATE_MAX):
             raise ValueError("تاریخ تسویه باید امروز یا پیش از آن باشد.")
+        tracking = evidence.tracking_number.strip() if evidence else ""
+        image = evidence.image if evidence else None
+        if len(tracking) > 80:
+            raise ValueError("شمارهٔ پیگیری باید حداکثر ۸۰ نویسه باشد.")
+        if image is not None and not 1 <= len(image) <= MAX_RECEIPT_BYTES:
+            raise ValueError("حجم فایل رسید باید حداکثر ۱۰ مگابایت باشد.")
         with self.session.begin() as db:
             self._required_entry(db, entry_id).settled_on = day
+            if day is None or evidence is not None:
+                if day is not None and (tracking or image):
+                    db.merge(SettlementProof(entry_id=entry_id, tracking_number=tracking, image=image))
+                else:
+                    proof = db.get(SettlementProof, entry_id)
+                    if proof is not None:
+                        db.delete(proof)
 
     def delete(self, entry_id: int):
         with self.session.begin() as db:
