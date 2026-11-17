@@ -1,6 +1,6 @@
 import csv
 from dataclasses import replace
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -55,32 +55,64 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(self.store.get(second.id).title, "تجهیزات شعبه")
         self.assertEqual(self.store.get(second.id).bank, "بانک دوم")
 
-    def test_daily_reminders_are_persistent_and_stop_at_payment(self):
+    def test_three_hour_reminders_persist_across_midnight_and_stop_at_payment(self):
         due = date.today() - timedelta(days=2)
-        start = due - timedelta(days=3)
+        start = datetime.combine(due - timedelta(days=3), time(23), timezone.utc)
         entry = self.store.create(self.check(due=due, lead=3))[0]
         self.assertEqual(self.store.collect_reminders(start - timedelta(days=1)), [])
         self.assertEqual([e.id for e in self.store.collect_reminders(start)], [entry.id])
         self.store.engine.dispose()
         reopened = Store(self.path)
         self.addCleanup(reopened.engine.dispose)
-        self.assertEqual(reopened.collect_reminders(start), [])
-        self.assertEqual([e.id for e in reopened.collect_reminders(start + timedelta(days=1))], [entry.id])
-        self.assertEqual([e.id for e in reopened.collect_reminders(date.today())], [entry.id])
+        self.assertEqual(reopened.collect_reminders(start + timedelta(hours=2, minutes=59)), [])
+        self.assertEqual([e.id for e in reopened.collect_reminders(start + timedelta(hours=3))], [entry.id])
+        self.assertEqual([e.id for e in reopened.collect_reminders(start + timedelta(days=5))], [entry.id])
         reopened.settle(entry.id, date.today())
-        self.assertEqual(reopened.collect_reminders(date.today() + timedelta(days=1)), [])
+        self.assertEqual(reopened.collect_reminders(start + timedelta(days=6), at_startup=True), [])
+
+    def test_login_reminds_about_tomorrows_installment_and_restarts_interval(self):
+        loan_id = self.store.create_loan(replace(self.loan, lead_days=1), self.first_due, 2, 10_000_000)
+        first = self.store.loan(loan_id).installments[0]
+        before_due = datetime.combine(first.due_on - timedelta(days=1), time(8), timezone.utc)
+        self.assertEqual([e.id for e in self.store.collect_reminders(before_due)], [first.id])
+
+        login = before_due + timedelta(hours=1)
+        self.assertEqual(self.store.collect_reminders(login), [])
+        self.assertEqual([e.id for e in self.store.collect_reminders(login, at_startup=True)], [first.id])
+        self.assertEqual(self.store.collect_reminders(login + timedelta(hours=2)), [])
+        self.assertEqual([e.id for e in self.store.collect_reminders(login + timedelta(hours=3))], [first.id])
+
+    def test_upgrade_preserves_previous_entries_and_rechecks_daily_reminders_at_login(self):
+        entry = self.store.create(self.check(lead=1))[0]
+        login = datetime.combine(entry.due_on - timedelta(days=1), time(8), timezone.utc)
+        with self.store.engine.begin() as connection:
+            connection.exec_driver_sql("DROP TABLE reminder_deliveries")
+            connection.exec_driver_sql(
+                "CREATE TABLE reminders (entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE, "
+                "due_on DATE NOT NULL, notified_on DATE NOT NULL, PRIMARY KEY (entry_id, due_on, notified_on))"
+            )
+            connection.exec_driver_sql("INSERT INTO reminders VALUES (?, ?, ?)", (entry.id, entry.due_on, login.date()))
+        reopened = Store(self.path)
+        self.addCleanup(reopened.engine.dispose)
+        self.assertEqual(reopened.get(entry.id).amount, entry.amount)
+        self.assertEqual([e.id for e in reopened.collect_reminders(login, at_startup=True)], [entry.id])
+        self.assertEqual(reopened.collect_reminders(login), [])
 
     def test_due_day_only_and_change_of_due_date(self):
         details = self.check(lead=0)
         entry = self.store.create(details)[0]
         self.assertFalse(is_due(entry, self.first_due - timedelta(days=1), 7))
-        self.assertEqual(len(self.store.collect_reminders(self.first_due)), 1)
+        now = datetime.combine(self.first_due, time(10), timezone.utc)
+        self.assertEqual(self.store.collect_reminders(now - timedelta(days=1), at_startup=True), [])
+        self.assertEqual(len(self.store.collect_reminders(now)), 1)
         self.store.edit(entry.id, replace(details, due_on=self.first_due - timedelta(days=1)))
-        self.assertEqual(len(self.store.collect_reminders(self.first_due)), 1)
+        self.assertEqual(len(self.store.collect_reminders(now)), 1)
 
     def test_backup_copies_loans_and_csv_preserves_untrusted_text(self):
         loan_id = self.store.create_loan(self.loan, self.first_due, 2, 10_000_000)
         self.store.create(self.check(title="=1+2"))
+        when = datetime.combine(self.first_due, time(10), timezone.utc)
+        self.assertEqual(len(self.store.collect_reminders(when)), 2)
         backup_path = self.path.with_name("backup.sqlite3")
         self.store.backup(backup_path)
         backup = Store(backup_path)
@@ -88,6 +120,7 @@ class StoreTest(unittest.TestCase):
         self.store.delete_loan(loan_id)
         self.assertEqual(len(self.store.entries()), 1)
         self.assertEqual(len(backup.loan(loan_id).installments), 2)
+        self.assertEqual(len(self.store.collect_reminders(when, at_startup=True)), 1)
 
         csv_path = self.path.with_suffix(".csv")
         self.store.export(csv_path, date.today())

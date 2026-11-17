@@ -1,13 +1,14 @@
 from datetime import date
+import re
 
 from PySide6.QtCore import QLocale, QRectF, Qt
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import QColor, QKeySequence, QPainter, QPen, QValidator
 from PySide6.QtWidgets import (
-    QAbstractButton, QCalendarWidget, QComboBox, QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
-    QMessageBox, QPushButton, QScrollArea, QSizePolicy, QSpinBox, QVBoxLayout, QWidget,
+    QAbstractButton, QApplication, QCalendarWidget, QComboBox, QDialog, QFrame, QHBoxLayout,
+    QLabel, QLineEdit, QPushButton, QScrollArea, QSizePolicy, QSpinBox, QVBoxLayout, QWidget,
 )
 
-from .localization import DATE_MAX, DATE_MIN, JALALI, fa, parse_date, qdate, short_date
+from .localization import ASCII_DIGITS, DATE_MAX, DATE_MIN, JALALI, MAX_AMOUNT, fa, parse_date, qdate, short_date
 from .storage import MAX_LEAD_DAYS
 from .theme import BORDER, symbol
 
@@ -61,20 +62,96 @@ def field(value="", placeholder="", limit=100) -> QLineEdit:
     return widget
 
 
-def numeric_field(value="", placeholder="") -> QLineEdit:
-    widget = field(value, placeholder, limit=25)
-    widget.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
-    return widget
+class AmountValidator(QValidator):
+    def validate(self, text, position):
+        translated = text.translate(ASCII_DIGITS).replace("٬", ",")
+        digits = translated.replace(",", "")
+        if not re.fullmatch(r"[0-9]*", digits) or len(digits) > len(str(MAX_AMOUNT)):
+            return QValidator.State.Invalid, text, position
+        if not digits:
+            return QValidator.State.Intermediate, "", 0
+        formatted = re.sub(r"(?<=[0-9])(?=(?:[0-9]{3})+$)", ",", digits)
+        digits_after_cursor = len(translated[position:].replace(",", ""))
+        cursor = len(formatted)
+        while digits_after_cursor:
+            cursor -= 1
+            digits_after_cursor -= formatted[cursor] != ","
+        return QValidator.State.Acceptable, formatted, cursor
 
 
-def confirm(parent, title, message) -> bool:
-    box = QMessageBox(QMessageBox.Icon.Warning, title, message, parent=parent)
-    box.setTextFormat(Qt.TextFormat.PlainText)
-    yes = box.addButton("تأیید", QMessageBox.ButtonRole.AcceptRole)
-    no = box.addButton("انصراف", QMessageBox.ButtonRole.RejectRole)
-    box.setDefaultButton(no)
-    box.exec()
-    return box.clickedButton() == yes
+class AmountField(QLineEdit):
+    def __init__(self, amount: int | None = None):
+        super().__init__(f"{amount:,}" if amount is not None else "")
+        self.setPlaceholderText("0")
+        self.setAlignment(RIGHT)
+        self.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+        self.setValidator(AmountValidator(self))
+
+    def keyPressEvent(self, event):
+        if self.isReadOnly():
+            super().keyPressEvent(event)
+            return
+        start = self.selectionStart() if self.hasSelectedText() else self.cursorPosition()
+        end = start + len(self.selectedText())
+        current = self.text()
+        key = event.key()
+        modifiers = event.modifiers() & ~Qt.KeyboardModifier.KeypadModifier
+        if event.matches(QKeySequence.StandardKey.Paste):
+            inserted = QApplication.clipboard().text().strip()
+            if not inserted:
+                event.accept()
+                return
+        elif modifiers == Qt.KeyboardModifier.NoModifier and key in (Qt.Key.Key_Backspace, Qt.Key.Key_Delete):
+            inserted = ""
+            if start == end:
+                if key == Qt.Key.Key_Backspace:
+                    start = max(0, start - (2 if current[max(0, start - 1):start] == "," else 1))
+                else:
+                    end += 2 if current[end:end + 1] == "," else 1
+        elif not modifiers & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.MetaModifier) and re.fullmatch(
+            r"[0-9]", event.text().translate(ASCII_DIGITS),
+        ):
+            inserted = event.text()
+        else:
+            super().keyPressEvent(event)
+            return
+
+        candidate = current[:start] + inserted + current[end:]
+        state, formatted, cursor = self.validator().validate(candidate, start + len(inserted))
+        if state != QValidator.State.Invalid and formatted != current:
+            # Insert the formatted value in one native edit so Qt can undo the change.
+            self.selectAll()
+            self.insert(formatted)
+            self.setCursorPosition(cursor)
+        event.accept()
+
+
+def confirm(parent, title, message, *, action="تأیید", destructive=False) -> bool:
+    dialog = QDialog(parent)
+    dialog.setObjectName("confirmationDialog")
+    dialog.setWindowTitle(title)
+    dialog.setFixedWidth(410)
+    body = QVBoxLayout(dialog)
+    body.setContentsMargins(24, 22, 24, 20)
+    body.setSpacing(12)
+    body.addWidget(label(title, "heading", wrap=True))
+    body.addWidget(label(message, "muted", wrap=True))
+    body.addSpacing(6)
+
+    actions = QHBoxLayout()
+    actions.setSpacing(8)
+    actions.addStretch()
+    cancel = button("انصراف")
+    cancel.clicked.connect(dialog.reject)
+    cancel.setDefault(True)
+    accept = button(action, "destructive" if destructive else "primary")
+    accept.setAutoDefault(False)
+    accept.clicked.connect(dialog.accept)
+    actions.addWidget(cancel)
+    actions.addWidget(accept)
+    body.addLayout(actions)
+    cancel.setFocus()
+    return dialog.exec() == QDialog.DialogCode.Accepted
 
 
 class LeadField(QWidget):
@@ -91,6 +168,7 @@ class LeadField(QWidget):
         self.choices.addItem("تعداد روز دلخواه", -1)
         self.custom = QSpinBox()
         self.custom.setRange(0, MAX_LEAD_DAYS)
+        self.custom.setGroupSeparatorShown(True)
         self.custom.setSuffix(" روز")
         self.custom.setLocale(FA_LOCALE)
         self.custom.setAccessibleName("تعداد روز دلخواه پیش از سررسید")
@@ -117,7 +195,8 @@ class DateField(QWidget):
         self.maximum = maximum
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        self.edit = numeric_field(short_date(value) if value else "", "۱۴۰۵/۰۸/۲۶")
+        self.edit = field(short_date(value) if value else "", "۱۴۰۵/۰۸/۲۶", limit=25)
+        self.edit.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
         picker = button("", icon=symbol("calendar"))
         picker.setToolTip("تقویم شمسی")
         picker.setAccessibleName("باز کردن تقویم شمسی")

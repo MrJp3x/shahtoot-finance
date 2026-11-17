@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass, replace
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -23,6 +23,7 @@ INCOMING = "incoming"
 DEFAULT_LEAD_DAYS = 7
 MAX_LEAD_DAYS = 365
 MAX_INSTALLMENTS = 120
+REMINDER_INTERVAL_SECONDS = 3 * 60 * 60
 DIRECTION_NAMES = {OUTGOING: "پرداختی", INCOMING: "دریافتی"}
 KIND_NAMES = {CHECK: "چک", INSTALLMENT: "قسط"}
 
@@ -81,14 +82,14 @@ class Entry(Base):
     loan: Mapped[Loan | None] = relationship(back_populates="installments", lazy="joined")
 
 
-class Reminder(Base):
-    __tablename__ = "reminders"
+class ReminderDelivery(Base):
+    __tablename__ = "reminder_deliveries"
 
     entry_id: Mapped[int] = mapped_column(
         ForeignKey("entries.id", ondelete="CASCADE"), primary_key=True,
     )
-    due_on: Mapped[date] = mapped_column(Date, primary_key=True)
-    notified_on: Mapped[date] = mapped_column(Date, primary_key=True)
+    due_on: Mapped[date] = mapped_column(Date)
+    notified_at: Mapped[int] = mapped_column(Integer)
 
 
 class Setting(Base):
@@ -349,28 +350,33 @@ class Store:
         with self.session() as db:
             return sum(is_due(entry, today, default) for entry in db.scalars(self._potential_reminders(today)))
 
-    def collect_reminders(self, today: date) -> list[Entry]:
+    def collect_reminders(self, now: datetime, *, at_startup=False) -> list[Entry]:
+        today = now.date()
+        timestamp = int(now.timestamp())
         default = self.reminder_days()
+        delivery = ReminderDelivery
+        can_repeat = (
+            (delivery.notified_at <= timestamp - REMINDER_INTERVAL_SECONDS)
+            | (delivery.notified_at > timestamp)
+        )
         with self.session.begin() as db:
-            sent = (
-                select(Reminder.entry_id)
-                .where(
-                    Reminder.entry_id == Entry.id,
-                    Reminder.due_on == Entry.due_on,
-                    Reminder.notified_on == today,
-                )
-                .exists()
-            )
-            candidates = db.scalars(
-                self._potential_reminders(today).where(~sent)
-                .order_by(Entry.due_on, Entry.id)
-            )
+            query = self._potential_reminders(today).order_by(Entry.due_on, Entry.id)
+            if not at_startup:
+                recent = select(delivery.entry_id).where(
+                    delivery.entry_id == Entry.id, delivery.due_on == Entry.due_on, ~can_repeat,
+                ).exists()
+                query = query.where(~recent)
             fresh = []
-            for entry in candidates:
+            for entry in db.scalars(query):
                 if is_due(entry, today, default):
-                    record = insert(Reminder).values(
-                        entry_id=entry.id, due_on=entry.due_on, notified_on=today,
-                    ).on_conflict_do_nothing()
+                    record = insert(delivery).values(
+                        entry_id=entry.id, due_on=entry.due_on, notified_at=timestamp,
+                    )
+                    record = record.on_conflict_do_update(
+                        index_elements=[delivery.entry_id],
+                        set_={"due_on": entry.due_on, "notified_at": timestamp},
+                        where=None if at_startup else (delivery.due_on != entry.due_on) | can_repeat,
+                    )
                     if db.execute(record).rowcount == 1:
                         fresh.append(entry)
         return fresh

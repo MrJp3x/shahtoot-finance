@@ -6,11 +6,11 @@ from pathlib import Path
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import (
     QButtonGroup, QCheckBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
-    QMainWindow, QProgressBar, QVBoxLayout, QWidget,
+    QMainWindow, QMenu, QProgressBar, QVBoxLayout, QWidget,
 )
 
 from . import APP_NAME
-from .dialogs import EntryDetail, EntryForm, LoanDetail, LoanForm, lead_label, run_action
+from .dialogs import EntryDetail, EntryForm, LoanDetail, LoanForm, confirm_delete_loan, lead_label, run_action
 from .localization import fa, long_date, money, normalized, short_date
 from .platform_services import set_startup, startup_enabled
 from .storage import (
@@ -331,7 +331,19 @@ class MainWindow(QMainWindow):
         progress.setAccessibleName(caption)
         card.add(progress)
         card.clicked.connect(lambda: self.open_loan(loan.id))
+        card.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        card.customContextMenuRequested.connect(lambda point: self.loan_menu(card, point, loan.id, loan.title))
         return card
+
+    def loan_menu(self, card, point, loan_id, title):
+        menu = QMenu(self)
+        menu.setObjectName("loanMenu")
+        remove = menu.addAction("حذف وام")
+        selected = menu.exec(card.mapToGlobal(point))
+        menu.deleteLater()
+        if selected == remove and confirm_delete_loan(self, self.store, loan_id, title):
+            self.notify_change()
+            self.statusBar().showMessage("وام حذف شد.", 5000)
 
     @staticmethod
     def card_head(card, caption, state_text, state):
@@ -385,7 +397,7 @@ class MainWindow(QMainWindow):
         row.addWidget(save)
         layout.addLayout(row)
         layout.addWidget(label(
-            f"زمان فعلی  •  {lead_label(self.default_days)}. یادآوری هر روز تا ثبت تسویه ادامه دارد.",
+            f"زمان فعلی  •  {lead_label(self.default_days)}. از شروع بازه تا ثبت تسویه، هر ۳ ساعت اعلان می‌آید.",
             "small", wrap=True,
         ))
         toggle = QCheckBox("اجرای پس‌زمینه هنگام ورود به ویندوز")

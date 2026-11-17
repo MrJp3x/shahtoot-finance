@@ -15,7 +15,7 @@ from .storage import (
     OUTGOING, Entry, EntryDetails, Loan, LoanDetails, Store, lead_time, status_label,
 )
 from .widgets import (
-    FA_LOCALE, RIGHT, DateField, LeadField, button, confirm, field, label, numeric_field,
+    FA_LOCALE, RIGHT, AmountField, DateField, LeadField, button, confirm, field, label,
     panel, scroll_contents,
 )
 
@@ -27,6 +27,16 @@ def notes_field(value: str):
     widget.setPlaceholderText("یادداشت اختیاری")
     widget.setFixedHeight(76)
     return widget
+
+
+def confirm_delete_loan(parent, store: Store, loan_id: int, title: str) -> bool:
+    if not confirm(
+        parent, "حذف وام",
+        f"وام «{title}» همراه با همهٔ اقساط و سوابق پرداخت آن برای همیشه حذف می‌شود.",
+        action="حذف وام", destructive=True,
+    ):
+        return False
+    return run_action(parent, lambda: store.delete_loan(loan_id))
 
 
 def run_action(parent, action) -> bool:
@@ -91,7 +101,7 @@ class LoanForm(FormDialog):
         self.title = field(loan.title if loan else "", "مثلاً تسهیلات خرید تجهیزات")
         self.bank = field(loan.bank if loan else "", "نام بانک", limit=80)
         self.reference = field(loan.reference if loan else "", "اختیاری", limit=80)
-        self.principal = numeric_field(money(loan.principal) if loan else "", "۰")
+        self.principal = AmountField(loan.principal if loan else None)
         self.received = DateField(loan.received_on if loan else date.today())
         self.lead = LeadField(loan.lead_days if loan else None, "پیش‌فرض برنامه")
         self.notes = notes_field(loan.notes if loan else "")
@@ -105,8 +115,9 @@ class LoanForm(FormDialog):
             self.count = QSpinBox()
             self.count.setLocale(FA_LOCALE)
             self.count.setRange(1, MAX_INSTALLMENTS)
+            self.count.setGroupSeparatorShown(True)
             self.count.setValue(12)
-            self.amount = numeric_field("", "۰")
+            self.amount = AmountField()
             self.row("سررسید نخستین قسط", self.first_due)
             self.row("تعداد اقساط ماهانه", self.count)
             self.row("مبلغ هر قسط (تومان)", self.amount)
@@ -143,7 +154,7 @@ class EntryForm(FormDialog):
         self.party = field(entry.party if entry else "", "نام دریافت‌کننده یا صادرکننده")
         self.reference = field(entry.reference if entry else "", "اختیاری", limit=80)
         self.bank = field(entry.bank if entry else "", "اختیاری", limit=80)
-        self.amount = numeric_field(money(entry.amount) if entry else "", "۰")
+        self.amount = AmountField(entry.amount if entry else None)
         self.due = DateField(entry.due_on if entry else None)
         self.lead = LeadField(entry.lead_days if entry else None, "تنظیم وام" if linked else "پیش‌فرض برنامه")
         self.notes = notes_field(entry.notes if entry else "")
@@ -386,7 +397,6 @@ class LoanDetail(QDialog):
             self.refresh()
 
     def delete(self):
-        if confirm(self, "حذف وام", "وام، همهٔ اقساط و سابقهٔ پرداخت و یادآوری آن‌ها برای همیشه حذف می‌شود."):
-            if run_action(self, lambda: self.store.delete_loan(self.loan_id)):
-                self.changed = True
-                self.accept()
+        if confirm_delete_loan(self, self.store, self.loan_id, self.title.text()):
+            self.changed = True
+            self.accept()

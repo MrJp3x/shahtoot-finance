@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import date
+from datetime import date, datetime, timedelta
 import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -22,10 +22,14 @@ log = logging.getLogger(__name__)
 
 
 class DesktopApp(QObject):
-    def __init__(self, app: QApplication, store: Store, serve_in_tray: bool, manage_startup: bool, startup_error: str):
+    def __init__(
+        self, app: QApplication, store: Store, serve_in_tray: bool, manage_startup: bool,
+        startup_error: str, *, launched_at_login=False,
+    ):
         super().__init__(app)
         self.app = app
         self.store = store
+        self.login_reminder_pending = launched_at_login
         self.window = MainWindow(
             store, background_available=serve_in_tray, manage_startup=manage_startup, startup_error=startup_error,
         )
@@ -78,10 +82,11 @@ class DesktopApp(QObject):
 
     def check_reminders(self):
         try:
-            today = date.today()
+            now = datetime.now().astimezone()
+            today = now.date()
             if self.window.today != today:
                 self.window.refresh()
-            if self.tray is None:
+            if self.tray is None or not QSystemTrayIcon.isSystemTrayAvailable():
                 return
             due_count = self.store.reminder_count(today)
             self.tray.setIcon(self.alert_icon if due_count else self.normal_icon)
@@ -89,13 +94,17 @@ class DesktopApp(QObject):
             self.tray.setToolTip(f"{APP_NAME}{suffix}")
             if not QSystemTrayIcon.supportsMessages():
                 return
-            entries = self.store.collect_reminders(today)
+            entries = self.store.collect_reminders(now, at_startup=self.login_reminder_pending)
+            self.login_reminder_pending = False
             if not entries:
                 return
-            lines = [
-                f"{KIND_NAMES[entry.kind]} {entry.title[:42]} · {short_date(entry.due_on)}"
-                for entry in entries[:3]
-            ]
+            tomorrow = today + timedelta(days=1)
+            near_dates = {today: "امروز", tomorrow: "فردا"}
+            entries.sort(key=lambda entry: (entry.due_on not in near_dates, entry.due_on))
+            lines = []
+            for entry in entries[:3]:
+                due = near_dates.get(entry.due_on, short_date(entry.due_on))
+                lines.append(f"{KIND_NAMES[entry.kind]} {entry.title[:40]} · سررسید {due}")
             if len(entries) > 3:
                 lines.append(f"{fa(len(entries) - 3)} مورد دیگر در بخش سررسیدها")
             self.tray.showMessage(
@@ -134,8 +143,9 @@ def smoke_test(app: QApplication) -> int:
             today = date.today()
             store.create_loan(LoanDetails("وام آزمایشی", "بانک نمونه", 100_000, today), today, 2, 50_000)
             store.create(EntryDetails(CHECK, OUTGOING, "چک آزمایشی", "فروشنده", 10_000, today))
-            if len(store.collect_reminders(today)) != 2 or store.collect_reminders(today):
-                raise RuntimeError("Smoke test did not produce one reminder per due entry")
+            now = datetime.now().astimezone()
+            if len(store.collect_reminders(now)) != 2 or store.collect_reminders(now):
+                raise RuntimeError("Smoke test did not produce one reminder per due entry in the interval")
             window = MainWindow(store, background_available=False)
             window.show()
             app.processEvents()
@@ -180,14 +190,14 @@ def main() -> int:
 
         configure_logging(data_dir / "app.log")
         store = Store(data_dir / "finance.sqlite3")
-        tray_available = QSystemTrayIcon.isSystemTrayAvailable()
+        tray_available = IS_WINDOWS or QSystemTrayIcon.isSystemTrayAvailable()
         manage_startup = IS_WINDOWS and args.data_dir is None
         error = register_startup(store) if manage_startup else ""
-        desktop = DesktopApp(app, store, tray_available, manage_startup, error)
+        desktop = DesktopApp(app, store, tray_available, manage_startup, error, launched_at_login=args.background)
         instance.activated.connect(desktop.show_window)
         if not args.background or not tray_available:
             desktop.show_window()
-        QTimer.singleShot(1300, desktop.check_reminders)
+        QTimer.singleShot(8000 if args.background else 1300, desktop.check_reminders)
         return app.exec()
     except Exception:
         log.exception("Application startup failed")

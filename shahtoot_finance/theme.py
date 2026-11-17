@@ -55,6 +55,14 @@ QPushButton[role="link"] { background: transparent; color: #345ca0; border-color
 QPushButton[role="link"]:hover { background: #eaf1fc; }
 QPushButton[role="danger"] { color: #a12e43; }
 QPushButton[role="danger"]:hover { background: #fff0f3; border-color: #e1aab5; }
+QDialog#confirmationDialog { background: #ffffff; }
+QPushButton[role="destructive"] { background: #a12e43; border-color: #a12e43; color: white; }
+QPushButton[role="destructive"]:hover { background: #8c2639; border-color: #8c2639; }
+QPushButton[role="destructive"]:pressed { background: #731d2d; }
+QPushButton[role="destructive"]:focus { border-color: #571520; }
+QMenu#loanMenu { background: white; border: 1px solid #dce4ef; padding: 5px; }
+QMenu#loanMenu::item { color: #a12e43; padding: 8px 18px; border-radius: 5px; }
+QMenu#loanMenu::item:selected { background: #fff0f3; }
 QPushButton:disabled { color: #6a7890; background: #eaf0f7; border-color: #dce4ef; }
 QLineEdit, QComboBox, QSpinBox, QPlainTextEdit {
     background: white; border: 1px solid #d4deec; border-radius: 8px;
