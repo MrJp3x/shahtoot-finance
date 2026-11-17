@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.sqlite3*
+/dist/
+/build/
+/*.spec
+.DS_Store
+/test-data/
