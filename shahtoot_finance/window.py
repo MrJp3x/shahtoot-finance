@@ -6,20 +6,20 @@ from pathlib import Path
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import (
     QButtonGroup, QCheckBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
-    QMainWindow, QMenu, QProgressBar, QVBoxLayout, QWidget,
+    QMainWindow, QMenu, QProgressBar, QSpinBox, QVBoxLayout, QWidget,
 )
 
 from . import APP_NAME
-from .dialogs import EntryDetail, EntryForm, LoanDetail, LoanForm, confirm_delete_loan, lead_label, run_action
+from .dialogs import EntryDetail, EntryForm, LoanDetail, LoanForm, confirm_delete_loan, run_action
 from .localization import fa, long_date, money, normalized, short_date
 from .platform_services import set_startup, startup_enabled
 from .report import DueReport
 from .storage import (
-    CHECK, DIRECTION_NAMES, INCOMING, INSTALLMENT, KIND_NAMES, Entry, Loan, Store,
+    CHECK, DIRECTION_NAMES, INCOMING, INSTALLMENT, KIND_NAMES, MAX_REMINDER_MINUTES, Entry, Loan, Store,
     is_due, status, status_label,
 )
 from .theme import BLUE, symbol
-from .widgets import Card, LeadField, button, field, label, panel, scroll_contents
+from .widgets import FA_LOCALE, Card, LeadField, button, field, label, panel, scroll_contents
 
 PAGES = {
     "home": ("نمای کلی", "home"),
@@ -403,12 +403,23 @@ class MainWindow(QMainWindow):
         self.lead = LeadField(self.default_days, None)
         row.addWidget(self.lead)
         row.addStretch()
-        save = button("ذخیرهٔ زمان", "primary")
-        save.clicked.connect(self.save_default)
-        row.addWidget(save)
         layout.addLayout(row)
+        repeat = QHBoxLayout()
+        repeat.addWidget(label("فاصلهٔ تکرار اعلان"))
+        self.repeat_minutes = QSpinBox()
+        self.repeat_minutes.setAccessibleName("فاصلهٔ تکرار اعلان به دقیقه")
+        self.repeat_minutes.setRange(1, MAX_REMINDER_MINUTES)
+        self.repeat_minutes.setLocale(FA_LOCALE)
+        self.repeat_minutes.setValue(self.store.reminder_minutes())
+        self.repeat_minutes.setSuffix(" دقیقه")
+        repeat.addWidget(self.repeat_minutes)
+        repeat.addStretch()
+        save = button("ذخیرهٔ تنظیمات یادآوری", "primary")
+        save.clicked.connect(self.save_reminders)
+        repeat.addWidget(save)
+        layout.addLayout(repeat)
         layout.addWidget(label(
-            f"زمان فعلی  •  {lead_label(self.default_days)}. از شروع بازه تا ثبت تسویه، هر ۳ ساعت اعلان می‌آید.",
+            "مثلاً برای تکرار هر دو ساعت، ۱۲۰ دقیقه وارد کنید. تکرار تا ثبت تسویه ادامه دارد.",
             "small", wrap=True,
         ))
         toggle = QCheckBox("اجرای پس‌زمینه هنگام ورود به ویندوز")
@@ -449,10 +460,10 @@ class MainWindow(QMainWindow):
         files_body.addWidget(path)
         self.body.addWidget(files)
 
-    def save_default(self):
-        if run_action(self, lambda: self.store.set_reminder_days(self.lead.value())):
+    def save_reminders(self):
+        if run_action(self, lambda: self.store.set_reminder_settings(self.lead.value(), self.repeat_minutes.value())):
             self.notify_change()
-            self.statusBar().showMessage("زمان پیش‌فرض ذخیره شد.", 5000)
+            self.statusBar().showMessage("تنظیمات یادآوری ذخیره شد.", 5000)
 
     def save_startup(self, enabled: bool):
         if run_action(self, lambda: set_startup(enabled)):

@@ -14,7 +14,9 @@ from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
 from . import APP_ID, APP_NAME, VERSION
 from .localization import fa, short_date
-from .platform_services import IS_WINDOWS, SingleInstance, set_startup, startup_enabled
+from .platform_services import (
+    IS_WINDOWS, SingleInstance, registered_startup_command, set_startup, startup_command, taskbar_ready,
+)
 from .receipts import read_receipt
 from .storage import CHECK, KIND_NAMES, OUTGOING, EntryDetails, LoanDetails, PaymentEvidence, Store
 from .theme import apply_theme, brand_icon
@@ -32,6 +34,7 @@ class DesktopApp(QObject):
         self.app = app
         self.store = store
         self.login_reminder_pending = launched_at_login
+        self.login_reminder_checked = False
         self.window = MainWindow(
             store, background_available=serve_in_tray, manage_startup=manage_startup, startup_error=startup_error,
         )
@@ -54,7 +57,7 @@ class DesktopApp(QObject):
             self.normal_icon = app.windowIcon()
             self.alert_icon = brand_icon(alert=True)
         self.timer = QTimer(self)
-        self.timer.setInterval(60_000)
+        self.timer.setInterval(15_000)
         self.timer.timeout.connect(self.check_reminders)
         self.timer.start()
 
@@ -76,11 +79,18 @@ class DesktopApp(QObject):
         self.app.quit()
 
     def test_notification(self):
-        if self.tray:
+        if self.tray and taskbar_ready() and QSystemTrayIcon.isSystemTrayAvailable() and QSystemTrayIcon.supportsMessages():
             self.tray.showMessage(
                 APP_NAME, "اعلان آزمایشی حسابداری شاهتوت", QSystemTrayIcon.MessageIcon.Information,
             )
             self.window.statusBar().showMessage("اعلان آزمایشی به سیستم ارسال شد.", 5000)
+        else:
+            self.window.statusBar().showMessage("ناحیهٔ اعلان سیستم در دسترس نیست.", 5000)
+
+    def request_login_reminder(self):
+        if not self.login_reminder_checked and not self.login_reminder_pending:
+            self.login_reminder_pending = True
+            self.check_reminders()
 
     def check_reminders(self):
         try:
@@ -88,7 +98,7 @@ class DesktopApp(QObject):
             today = now.date()
             if self.window.today != today:
                 self.window.refresh()
-            if self.tray is None or not QSystemTrayIcon.isSystemTrayAvailable():
+            if self.tray is None or not taskbar_ready() or not QSystemTrayIcon.isSystemTrayAvailable():
                 return
             due_count = self.store.reminder_count(today)
             self.tray.setIcon(self.alert_icon if due_count else self.normal_icon)
@@ -96,37 +106,42 @@ class DesktopApp(QObject):
             self.tray.setToolTip(f"{APP_NAME}{suffix}")
             if not QSystemTrayIcon.supportsMessages():
                 return
-            entries = self.store.collect_reminders(now, at_startup=self.login_reminder_pending)
-            self.login_reminder_pending = False
-            if not entries:
-                return
-            tomorrow = today + timedelta(days=1)
-            near_dates = {today: "امروز", tomorrow: "فردا"}
-            entries.sort(key=lambda entry: (entry.due_on not in near_dates, entry.due_on))
-            lines = []
-            for entry in entries[:3]:
-                due = near_dates.get(entry.due_on, short_date(entry.due_on))
-                lines.append(f"{KIND_NAMES[entry.kind]} {entry.title[:40]} · سررسید {due}")
-            if len(entries) > 3:
-                lines.append(f"{fa(len(entries) - 3)} مورد دیگر در بخش سررسیدها")
-            self.tray.showMessage(
-                f"{fa(len(entries))} سررسید برای پیگیری",
-                "\n".join(lines), QSystemTrayIcon.MessageIcon.Warning,
+            self.store.collect_reminders(
+                now, at_startup=self.login_reminder_pending, deliver=lambda entries: self.show_reminders(entries, today),
             )
+            self.login_reminder_checked = self.login_reminder_checked or self.login_reminder_pending
+            self.login_reminder_pending = False
         except Exception:
             log.exception("Could not check reminders")
 
+    def show_reminders(self, entries, today):
+        near_dates = {today: "امروز", today + timedelta(days=1): "فردا"}
+        upcoming = sorted(entries, key=lambda entry: (entry.due_on not in near_dates, entry.due_on))
+        lines = []
+        for entry in upcoming[:3]:
+            due = near_dates.get(entry.due_on, short_date(entry.due_on))
+            lines.append(f"{KIND_NAMES[entry.kind]} {entry.title[:40]} · سررسید {due}")
+        if len(upcoming) > 3:
+            lines.append(f"{fa(len(upcoming) - 3)} مورد دیگر در بخش سررسیدها")
+        self.tray.showMessage(
+            f"{fa(len(upcoming))} سررسید برای پیگیری",
+            "\n".join(lines), QSystemTrayIcon.MessageIcon.Warning,
+        )
+
 
 def register_startup(store: Store) -> str:
-    if not IS_WINDOWS or store.setting("startup_configured", 0):
+    if not IS_WINDOWS:
         return ""
+    configured = store.setting("startup_configured", 0)
     try:
-        if not startup_enabled():
+        registered = registered_startup_command()
+        if (registered is None and not configured) or (registered is not None and registered != startup_command()):
             set_startup(True)
     except (OSError, ValueError):
         log.exception("Could not register Windows startup")
         return "اجرای خودکار فعال نشد. تنظیم اجرای پس‌زمینه را در برنامه بررسی کنید."
-    store.set_setting("startup_configured", 1)
+    if not configured:
+        store.set_setting("startup_configured", 1)
     return ""
 
 
@@ -195,7 +210,7 @@ def main() -> int:
         data_dir.mkdir(parents=True, exist_ok=True)
         instance = SingleInstance(data_dir)
         if not instance.acquire():
-            if not args.background and not instance.request_activation():
+            if not instance.request_activation(at_login=args.background) and not args.background:
                 QMessageBox.warning(None, APP_NAME, "برنامه در حال اجراست. آن را از کنار ساعت باز کنید.")
             return 0
 
@@ -203,9 +218,10 @@ def main() -> int:
         store = Store(data_dir / "finance.sqlite3")
         tray_available = IS_WINDOWS or QSystemTrayIcon.isSystemTrayAvailable()
         manage_startup = IS_WINDOWS and args.data_dir is None
-        error = register_startup(store) if manage_startup else ""
+        error = register_startup(store) if manage_startup and not args.background else ""
         desktop = DesktopApp(app, store, tray_available, manage_startup, error, launched_at_login=args.background)
         instance.activated.connect(desktop.show_window)
+        instance.login_requested.connect(desktop.request_login_reminder)
         if not args.background or not tray_available:
             desktop.show_window()
         QTimer.singleShot(8000 if args.background else 1300, desktop.check_reminders)

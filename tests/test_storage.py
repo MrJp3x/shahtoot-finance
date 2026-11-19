@@ -83,6 +83,28 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(self.store.collect_reminders(login + timedelta(hours=2)), [])
         self.assertEqual([e.id for e in self.store.collect_reminders(login + timedelta(hours=3))], [first.id])
 
+    def test_two_hour_interval_persists_and_failed_dispatch_is_retried(self):
+        entry = self.store.create(self.check(lead=1))[0]
+        login = datetime.combine(entry.due_on - timedelta(days=1), time(8), timezone.utc)
+        self.store.set_reminder_settings(7, 120)
+        reopened = Store(self.path)
+        self.addCleanup(reopened.engine.dispose)
+        self.assertEqual(reopened.reminder_minutes(), 120)
+
+        def failed_dispatch(entries):
+            self.assertEqual([item.id for item in entries], [entry.id])
+            raise OSError("tray unavailable")
+
+        with self.assertRaises(OSError):
+            reopened.collect_reminders(login, at_startup=True, deliver=failed_dispatch)
+        delivered = []
+        reopened.collect_reminders(login, deliver=delivered.extend)
+        self.assertEqual([item.id for item in delivered], [entry.id])
+        self.assertEqual(reopened.collect_reminders(login + timedelta(minutes=119, seconds=59)), [])
+        self.assertEqual([item.id for item in reopened.collect_reminders(login + timedelta(hours=2))], [entry.id])
+        reopened.settle(entry.id, date.today())
+        self.assertEqual(reopened.collect_reminders(login + timedelta(hours=4), at_startup=True), [])
+
     def test_upgrade_preserves_previous_entries_and_rechecks_daily_reminders_at_login(self):
         entry = self.store.create(self.check(lead=1))[0]
         login = datetime.combine(entry.due_on - timedelta(days=1), time(8), timezone.utc)

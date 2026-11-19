@@ -22,17 +22,32 @@ def startup_command() -> str:
     return subprocess.list2cmdline([*arguments, "--background"])
 
 
-def startup_enabled() -> bool:
+def registered_startup_command() -> str | None:
     if not IS_WINDOWS:
-        return False
+        return None
     import winreg
 
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
             command, _kind = winreg.QueryValueEx(key, APP_ID)
     except FileNotFoundError:
-        return False
-    return command == startup_command()
+        return None
+    return command
+
+
+def startup_enabled() -> bool:
+    return registered_startup_command() == startup_command()
+
+
+def taskbar_ready() -> bool:
+    if not IS_WINDOWS:
+        return True
+    from ctypes import windll, wintypes
+
+    find = windll.user32.FindWindowW
+    find.argtypes = (wintypes.LPCWSTR, wintypes.LPCWSTR)
+    find.restype = wintypes.HWND
+    return bool(find("Shell_TrayWnd", None))
 
 
 def set_startup(enabled: bool):
@@ -56,11 +71,13 @@ def set_startup(enabled: bool):
 
 class SingleInstance(QObject):
     activated = Signal()
+    login_requested = Signal()
 
     def __init__(self, data_dir: Path):
         super().__init__()
         self.data_dir = data_dir
         self.pending = data_dir / "show-window.request"
+        self.login_pending = data_dir / "login-reminder.request"
         self.lock = QLockFile(str(data_dir / "app.lock"))
         self.lock.setStaleLockTime(0)
         self.watcher = QFileSystemWatcher(self)
@@ -78,19 +95,20 @@ class SingleInstance(QObject):
         QTimer.singleShot(0, self, self._activate)
         return True
 
-    def request_activation(self) -> bool:
+    def request_activation(self, *, at_login=False) -> bool:
         try:
-            self.pending.touch()
+            (self.login_pending if at_login else self.pending).touch()
         except OSError:
             return False
         return True
 
     def _activate(self, _changed_path=None):
-        try:
-            self.pending.unlink()
-        except OSError:
-            return
-        self.activated.emit()
+        for request, signal in ((self.pending, self.activated), (self.login_pending, self.login_requested)):
+            try:
+                request.unlink()
+            except OSError:
+                continue
+            signal.emit()
 
     def close(self):
         self.fallback.stop()

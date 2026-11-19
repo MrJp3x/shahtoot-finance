@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -23,7 +24,8 @@ INCOMING = "incoming"
 DEFAULT_LEAD_DAYS = 7
 MAX_LEAD_DAYS = 365
 MAX_INSTALLMENTS = 120
-REMINDER_INTERVAL_SECONDS = 3 * 60 * 60
+DEFAULT_REMINDER_MINUTES = 180
+MAX_REMINDER_MINUTES = 30 * 24 * 60
 MAX_RECEIPT_BYTES = 10 * 1024 * 1024
 DIRECTION_NAMES = {OUTGOING: "پرداختی", INCOMING: "دریافتی"}
 KIND_NAMES = {CHECK: "چک", INSTALLMENT: "قسط"}
@@ -380,10 +382,17 @@ class Store:
     def reminder_days(self) -> int:
         return self.setting("reminder_days", DEFAULT_LEAD_DAYS)
 
-    def set_reminder_days(self, days: int):
+    def reminder_minutes(self) -> int:
+        return self.setting("reminder_minutes", DEFAULT_REMINDER_MINUTES)
+
+    def set_reminder_settings(self, days: int, minutes: int):
         if not 0 <= days <= MAX_LEAD_DAYS:
             raise ValueError("فاصلهٔ یادآوری معتبر نیست.")
-        self.set_setting("reminder_days", days)
+        if not 1 <= minutes <= MAX_REMINDER_MINUTES:
+            raise ValueError("فاصلهٔ تکرار اعلان باید بین یک دقیقه و ۳۰ روز باشد.")
+        with self.session.begin() as db:
+            db.merge(Setting(key="reminder_days", value=days))
+            db.merge(Setting(key="reminder_minutes", value=minutes))
 
     @staticmethod
     def _potential_reminders(today: date):
@@ -396,13 +405,16 @@ class Store:
         with self.session() as db:
             return sum(is_due(entry, today, default) for entry in db.scalars(self._potential_reminders(today)))
 
-    def collect_reminders(self, now: datetime, *, at_startup=False) -> list[Entry]:
+    def collect_reminders(
+        self, now: datetime, *, at_startup=False, deliver: Callable[[list[Entry]], None] | None = None,
+    ) -> list[Entry]:
         today = now.date()
         timestamp = int(now.timestamp())
         default = self.reminder_days()
+        interval_seconds = self.reminder_minutes() * 60
         delivery = ReminderDelivery
         can_repeat = (
-            (delivery.notified_at <= timestamp - REMINDER_INTERVAL_SECONDS)
+            (delivery.notified_at <= timestamp - interval_seconds)
             | (delivery.notified_at > timestamp)
         )
         with self.session.begin() as db:
@@ -425,6 +437,8 @@ class Store:
                     )
                     if db.execute(record).rowcount == 1:
                         fresh.append(entry)
+            if fresh and deliver is not None:
+                deliver(fresh)
         return fresh
 
     def backup(self, destination: Path):

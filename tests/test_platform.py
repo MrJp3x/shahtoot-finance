@@ -28,6 +28,11 @@ class PlatformTest(unittest.TestCase):
                 self.assertTrue(secondary.request_activation())
                 app.processEvents()
                 self.assertTrue(activated.count() or activated.wait(1000))
+                login = QSignalSpy(primary.login_requested)
+                self.assertTrue(secondary.request_activation(at_login=True))
+                app.processEvents()
+                self.assertTrue(login.count() or login.wait(1000))
+                self.assertEqual(activated.count(), 1)
             finally:
                 primary.close()
             self.assertTrue(secondary.acquire())
