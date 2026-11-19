@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QMenu, QProgressBar, QSpinBox, QVBoxLayout, QWidget,
 )
 
-from . import APP_NAME
+from . import APP_NAME, VERSION
 from .dialogs import EntryDetail, EntryForm, LoanDetail, LoanForm, confirm_delete_loan, run_action
 from .localization import fa, long_date, money, normalized, short_date
 from .platform_services import set_startup, startup_enabled
@@ -105,7 +105,7 @@ class MainWindow(QMainWindow):
         logo = label("")
         logo.setPixmap(self.windowIcon().pixmap(38, 38))
         layout.addWidget(logo)
-        layout.addWidget(label("حسابداری شاهتوت", "brand"))
+        layout.addWidget(label(APP_NAME, "brand"))
         layout.addSpacing(13)
         divider = QFrame()
         divider.setObjectName("railLine")
@@ -232,7 +232,7 @@ class MainWindow(QMainWindow):
         hero, hero_layout = panel(margins=(19, 18, 19, 18), spacing=6)
         hero.setObjectName("hero")
         headline = QHBoxLayout()
-        headline.addWidget(label("تعهدات مالی شاهتوت", "heroTitle"))
+        headline.addWidget(label("تعهدات مالی شاه توت", "heroTitle"))
         headline.addStretch()
         headline.addWidget(label(long_date(self.today), "heroDate"))
         hero_layout.addLayout(headline)
@@ -398,6 +398,7 @@ class MainWindow(QMainWindow):
     def settings_page(self):
         options, layout = panel(spacing=10)
         layout.addWidget(label("یادآوری و اجرای خودکار", "heading"))
+        layout.addWidget(label(f"نسخهٔ برنامه {fa(VERSION)}", "small"))
         layout.addWidget(label("زمان پیش‌فرض برای سندهایی که یادآوری جداگانه ندارند.", "muted", wrap=True))
         row = QHBoxLayout()
         self.lead = LeadField(self.default_days, None)
@@ -427,7 +428,7 @@ class MainWindow(QMainWindow):
         if self.manage_startup:
             try:
                 toggle.setChecked(startup_enabled())
-            except OSError:
+            except (OSError, ValueError):
                 layout.addWidget(label("خواندن تنظیم اجرای خودکار ویندوز ممکن نشد.", "small", wrap=True))
         if self.startup_error:
             layout.addWidget(label(self.startup_error, "small", wrap=True))

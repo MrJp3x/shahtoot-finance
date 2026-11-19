@@ -1,7 +1,8 @@
 import sys
 
 from PySide6.QtCore import QPointF, Qt
-from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPalette, QPen, QPixmap, QTextCharFormat
+from PySide6.QtWidgets import QTableView
 
 NAVY = "#15294b"
 BLUE = "#345ca0"
@@ -107,6 +108,47 @@ def apply_theme(app):
     font.setPixelSize(14)
     app.setFont(font)
     app.setStyleSheet(STYLE)
+
+
+def apply_calendar_theme(calendar):
+    # Qt paints date cells from palette roles, including for inactive windows.
+    role = QPalette.ColorRole
+    palette = calendar.palette()
+    for color_role, color in (
+        (role.Window, BACKGROUND), (role.Base, "#ffffff"), (role.AlternateBase, "#eaf0f8"),
+        (role.Button, "#eef3f9"), (role.Text, INK), (role.WindowText, INK), (role.ButtonText, INK),
+        (role.Highlight, "#234573"), (role.HighlightedText, "#ffffff"),
+    ):
+        palette.setColor(color_role, QColor(color))
+    for color_role in (role.Text, role.WindowText, role.ButtonText):
+        palette.setColor(QPalette.ColorGroup.Disabled, color_role, QColor(MUTED))
+    calendar.setPalette(palette)
+    # The styled calendar's internal view doesn't inherit the widget's palette.
+    view = calendar.findChild(QTableView)
+    if view is not None:
+        view.setPalette(palette)
+        view.viewport().setPalette(palette)
+
+    # Clear Qt's default bright red formatting for Saturday and Sunday.
+    for day in (Qt.DayOfWeek.Saturday, Qt.DayOfWeek.Sunday):
+        calendar.setWeekdayTextFormat(day, QTextCharFormat())
+
+    font = calendar.font()
+    font.setPixelSize(16)
+    calendar.setFont(font)
+    calendar.setStyleSheet("""
+        QWidget#qt_calendar_navigationbar { background: #eaf0f8; }
+        QToolButton {
+            border: 1px solid transparent; border-radius: 6px;
+            min-height: 24px; padding: 3px 8px;
+        }
+        QToolButton:hover { background: #dce8fa; }
+        QToolButton:pressed { background: #cedff6; }
+        QTableView:disabled, QToolButton:disabled, QMenu::item:disabled { color: #50647f; }
+        QMenu { background: white; border: 1px solid #dce4ef; padding: 4px; }
+        QMenu::item { padding: 5px 14px; }
+        QMenu::item:selected { background: #234573; color: white; }
+    """)
 
 
 def brand_icon(*, alert=False) -> QIcon:

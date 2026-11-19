@@ -1,15 +1,53 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 
-from PySide6.QtCore import QFileSystemWatcher, QLockFile, QObject, QTimer, Signal
+from PySide6.QtCore import QFileSystemWatcher, QIODevice, QLockFile, QObject, QSaveFile, QTimer, Signal
 
 from . import APP_ID
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 IS_WINDOWS = sys.platform == "win32"
+
+
+@dataclass(frozen=True)
+class WindowsRelease:
+    version: str
+    command: str
+
+    @property
+    def version_number(self) -> tuple[int, ...]:
+        return tuple(map(int, self.version.split(".")))
+
+    @classmethod
+    def read(cls, path: Path) -> WindowsRelease | None:
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
+        except ValueError as error:
+            raise OSError("Invalid active-release metadata") from error
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"version", "command"}
+            or not isinstance(value["version"], str)
+            or not re.fullmatch(r"[0-9]{1,6}(\.[0-9]{1,6}){2}", value["version"])
+            or not isinstance(value["command"], str)
+            or not value["command"]
+        ):
+            raise OSError("Invalid active-release metadata")
+        return cls(value["version"], value["command"])
+
+    def save(self, path: Path):
+        payload = json.dumps({"version": self.version, "command": self.command}).encode("utf-8")
+        file = QSaveFile(str(path))
+        if not file.open(QIODevice.OpenModeFlag.WriteOnly) or file.write(payload) != len(payload) or not file.commit():
+            raise OSError("Could not save active-release metadata")
 
 
 def startup_command() -> str:
@@ -29,9 +67,11 @@ def registered_startup_command() -> str | None:
 
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
-            command, _kind = winreg.QueryValueEx(key, APP_ID)
+            command, kind = winreg.QueryValueEx(key, APP_ID)
     except FileNotFoundError:
         return None
+    if kind not in (winreg.REG_SZ, winreg.REG_EXPAND_SZ) or not isinstance(command, str):
+        raise ValueError("مقدار اجرای خودکار ویندوز معتبر نیست.")
     return command
 
 
@@ -50,13 +90,13 @@ def taskbar_ready() -> bool:
     return bool(find("Shell_TrayWnd", None))
 
 
-def set_startup(enabled: bool):
+def set_startup(enabled: bool, *, command: str | None = None):
     if not IS_WINDOWS:
         raise ValueError("شروع خودکار در نسخهٔ ویندوز در دسترس است.")
     import winreg
 
     if enabled:
-        command = startup_command()
+        command = startup_command() if command is None else command
         if len(command.encode("utf-16-le")) // 2 > 260:
             raise ValueError("مسیر برنامه طولانی است. پوشهٔ برنامه را به مسیری کوتاه‌تر منتقل کنید.")
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:

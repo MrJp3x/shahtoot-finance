@@ -64,7 +64,8 @@ def set_rows(table, rows):
     for row, values in enumerate(rows):
         for col, value in enumerate(values):
             item = QTableWidgetItem(value)
-            item.setToolTip(f"<span>{escape(value)}</span>")
+            tooltip = escape(value).replace("\n", "<br>")
+            item.setToolTip(f"<span>{tooltip}</span>")
             item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             table.setItem(row, col, item)
 
@@ -127,7 +128,9 @@ class DueReport(QWidget):
 
         body.addWidget(label("جمع هفتگی (تومان)", "heading"))
         self.weekly = report_table(["بازهٔ هفته", "اقساط", "چک‌های پرداختی", "جمع پرداختی", "جمع دریافتی"])
-        self.weekly.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.weekly.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        self.weekly.setColumnWidth(0, 148)
+        self.weekly.verticalHeader().setDefaultSectionSize(2 * self.weekly.fontMetrics().lineSpacing() + 16)
         body.addWidget(self.weekly)
 
         details_heading = QHBoxLayout()
@@ -205,9 +208,13 @@ class DueReport(QWidget):
             week = weekly_totals.get(start, Totals(0, 0, 0))
             first = short_date(max(start, self.start))
             last = short_date(min(start + timedelta(days=6), self.end))
-            weeks.append((f"{first} تا {last}", money(week.installments), money(week.checks), money(week.outgoing), money(week.incoming)))
+            weeks.append((
+                f"از {first}\nتا {last}",
+                money(week.installments), money(week.checks), money(week.outgoing), money(week.incoming),
+            ))
         set_rows(self.weekly, weeks)
-        self.weekly.setFixedHeight(self.weekly.horizontalHeader().sizeHint().height() + 31 * min(len(weeks), 5) + 4)
+        row_height = self.weekly.verticalHeader().defaultSectionSize()
+        self.weekly.setFixedHeight(self.weekly.horizontalHeader().sizeHint().height() + row_height * min(len(weeks), 5) + 4)
         set_rows(self.items, [
             (short_date(entry.due_on), f"{KIND_NAMES[entry.kind]} {DIRECTION_NAMES[entry.direction]}",
              entry.title, entry.bank or "—", money(entry.amount))

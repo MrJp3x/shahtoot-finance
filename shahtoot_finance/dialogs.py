@@ -7,7 +7,8 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView,
-    QMessageBox, QPlainTextEdit, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QMessageBox, QPlainTextEdit, QSizePolicy, QSpacerItem, QSpinBox,
+    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from .localization import fa, money, parse_money, short_date
@@ -90,6 +91,9 @@ class FormDialog(QDialog):
         caption.setBuddy(widget)
         self.form.addRow(caption, widget)
 
+    def row_gap(self):
+        self.form.addItem(QSpacerItem(0, 4, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed))
+
     def save(self):
         if run_action(self, self.persist):
             self.accept()
@@ -111,7 +115,6 @@ class LoanForm(FormDialog):
         self.row("بانک", self.bank)
         self.row("شمارهٔ قرارداد", self.reference)
         self.row("اصل وام (تومان)", self.principal)
-        self.row("تاریخ دریافت", self.received)
         if loan is None:
             self.first_due = DateField()
             self.count = QSpinBox()
@@ -120,9 +123,12 @@ class LoanForm(FormDialog):
             self.count.setGroupSeparatorShown(True)
             self.count.setValue(12)
             self.amount = AmountField()
-            self.row("سررسید نخستین قسط", self.first_due)
             self.row("تعداد اقساط ماهانه", self.count)
             self.row("مبلغ هر قسط (تومان)", self.amount)
+        self.row_gap()
+        self.row("تاریخ دریافت", self.received)
+        if loan is None:
+            self.row("سررسید نخستین قسط", self.first_due)
         self.row("شروع یادآوری", self.lead)
         self.row("یادداشت وام", self.notes)
         self.title.setFocus()
@@ -170,6 +176,7 @@ class EntryForm(FormDialog):
         else:
             self.amount.setFocus()
         self.row("مبلغ (تومان)", self.amount)
+        self.row_gap()
         self.row("تاریخ سررسید", self.due)
         self.row("شروع یادآوری", self.lead)
         self.row("یادداشت", self.notes)

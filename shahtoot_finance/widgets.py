@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
 
 from .localization import ASCII_DIGITS, DATE_MAX, DATE_MIN, JALALI, MAX_AMOUNT, fa, parse_date, qdate, short_date
 from .storage import MAX_LEAD_DAYS
-from .theme import BORDER, symbol
+from .theme import BORDER, apply_calendar_theme, symbol
 
 RIGHT = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignAbsolute
 FA_LOCALE = QLocale(QLocale.Language.Persian, QLocale.Country.Iran)
@@ -215,12 +215,16 @@ class DateField(QWidget):
         dialog = QDialog(self)
         dialog.setWindowTitle("تقویم شمسی")
         body = QVBoxLayout(dialog)
-        calendar = QCalendarWidget()
+        body.setContentsMargins(14, 14, 14, 14)
+        body.setSpacing(10)
+        calendar = QCalendarWidget(dialog)
         calendar.setLocale(FA_LOCALE)
         calendar.setCalendar(JALALI)
         calendar.setDateRange(qdate(DATE_MIN), qdate(self.maximum))
         calendar.setFirstDayOfWeek(Qt.DayOfWeek.Saturday)
         calendar.setVerticalHeaderFormat(QCalendarWidget.VerticalHeaderFormat.NoVerticalHeader)
+        apply_calendar_theme(calendar)
+        calendar.setMinimumSize(452, 232)
         try:
             selected = self.value()
         except ValueError:

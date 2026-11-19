@@ -15,7 +15,7 @@ from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 from . import APP_ID, APP_NAME, VERSION
 from .localization import fa, short_date
 from .platform_services import (
-    IS_WINDOWS, SingleInstance, registered_startup_command, set_startup, startup_command, taskbar_ready,
+    IS_WINDOWS, SingleInstance, WindowsRelease, registered_startup_command, set_startup, startup_command, taskbar_ready,
 )
 from .receipts import read_receipt
 from .storage import CHECK, KIND_NAMES, OUTGOING, EntryDetails, LoanDetails, PaymentEvidence, Store
@@ -45,7 +45,7 @@ class DesktopApp(QObject):
             app.setQuitOnLastWindowClosed(False)
             self.tray = QSystemTrayIcon(app.windowIcon(), self)
             menu = QMenu(self.window)
-            menu.addAction("باز کردن حسابداری شاهتوت", self.show_window)
+            menu.addAction(f"باز کردن {APP_NAME}", self.show_window)
             menu.addAction("سررسیدها", self.window.show_due)
             menu.addSeparator()
             menu.addAction("خروج کامل", self.quit)
@@ -81,7 +81,7 @@ class DesktopApp(QObject):
     def test_notification(self):
         if self.tray and taskbar_ready() and QSystemTrayIcon.isSystemTrayAvailable() and QSystemTrayIcon.supportsMessages():
             self.tray.showMessage(
-                APP_NAME, "اعلان آزمایشی حسابداری شاهتوت", QSystemTrayIcon.MessageIcon.Information,
+                APP_NAME, f"اعلان آزمایشی {APP_NAME}", QSystemTrayIcon.MessageIcon.Information,
             )
             self.window.statusBar().showMessage("اعلان آزمایشی به سیستم ارسال شد.", 5000)
         else:
@@ -129,19 +129,27 @@ class DesktopApp(QObject):
         )
 
 
-def register_startup(store: Store) -> str:
-    if not IS_WINDOWS:
-        return ""
-    configured = store.setting("startup_configured", 0)
+def register_startup(
+    store: Store, path: Path, release: WindowsRelease, previous: WindowsRelease | None, *, background: bool,
+) -> str:
     try:
         registered = registered_startup_command()
-        if (registered is None and not configured) or (registered is not None and registered != startup_command()):
-            set_startup(True)
+        if background:
+            # Starting from the registered path also covers an in-place upgrade.
+            # The login process never writes to Windows' Run key.
+            if registered != release.command:
+                return ""
+        else:
+            configured = store.setting("startup_configured", 0)
+            if registered != release.command and (registered is not None or not configured):
+                set_startup(True, command=release.command)
+            if not configured:
+                store.set_setting("startup_configured", 1)
+        if release != previous:
+            release.save(path)
     except (OSError, ValueError):
-        log.exception("Could not register Windows startup")
-        return "اجرای خودکار فعال نشد. تنظیم اجرای پس‌زمینه را در برنامه بررسی کنید."
-    if not configured:
-        store.set_setting("startup_configured", 1)
+        log.exception("Could not update Windows startup or active release")
+        return "به‌روزرسانی تنظیم اجرای خودکار یا ثبت نسخه کامل نشد. برنامه را دوباره از مسیر جدید باز کنید."
     return ""
 
 
@@ -209,7 +217,27 @@ def main() -> int:
         data_dir = (args.data_dir or Path(location)).expanduser().resolve()
         data_dir.mkdir(parents=True, exist_ok=True)
         instance = SingleInstance(data_dir)
-        if not instance.acquire():
+        owns_lock = instance.acquire()
+        manage_startup = IS_WINDOWS and args.data_dir is None
+        if manage_startup:
+            release_path = data_dir / "active-release.json"
+            release = WindowsRelease(VERSION, startup_command())
+            previous = WindowsRelease.read(release_path)
+            if previous is not None and release.version_number < previous.version_number:
+                if not args.background:
+                    QMessageBox.warning(
+                        None, APP_NAME,
+                        f"نسخهٔ {fa(previous.version)} قبلاً فعال شده است. برنامه را از مسیر نسخهٔ جدیدتر باز کنید.",
+                    )
+                return 0
+            if not owns_lock and not args.background and release != previous:
+                QMessageBox.information(
+                    None, APP_NAME,
+                    "برای فعال‌کردن این نسخه یا مسیر، از منوی برنامه کنار ساعت ویندوز «خروج کامل» را بزنید "
+                    "و سپس همین فایل را دوباره باز کنید.",
+                )
+                return 0
+        if not owns_lock:
             if not instance.request_activation(at_login=args.background) and not args.background:
                 QMessageBox.warning(None, APP_NAME, "برنامه در حال اجراست. آن را از کنار ساعت باز کنید.")
             return 0
@@ -217,8 +245,9 @@ def main() -> int:
         configure_logging(data_dir / "app.log")
         store = Store(data_dir / "finance.sqlite3")
         tray_available = IS_WINDOWS or QSystemTrayIcon.isSystemTrayAvailable()
-        manage_startup = IS_WINDOWS and args.data_dir is None
-        error = register_startup(store) if manage_startup and not args.background else ""
+        error = ""
+        if manage_startup:
+            error = register_startup(store, release_path, release, previous, background=args.background)
         desktop = DesktopApp(app, store, tray_available, manage_startup, error, launched_at_login=args.background)
         instance.activated.connect(desktop.show_window)
         instance.login_requested.connect(desktop.request_login_reminder)
